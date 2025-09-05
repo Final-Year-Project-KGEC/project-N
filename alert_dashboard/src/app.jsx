@@ -1,138 +1,261 @@
-import React, { useState } from 'react';
-import Papa from 'papaparse';
-import { PieChart, Pie, Cell, Tooltip, Legend } from 'recharts';
+import React, { useState, useEffect, useRef } from "react";
+import Papa from "papaparse";
+import FileUpload from "./components/FileUpload";
+import AlertTable from "./components/AlertTable";
+import ChartView from "./components/ChartView";
+import AdminReport from "./components/AdminReport";
+import Popup from "./components/Popup";
 
-const COLORS = ['#FF0000', '#FF7F00', '#FFD700', '#00C49F'];
-
-function calculateScore(alert) {
-  const recency = parseFloat(alert.Recency) || 0;
-  const sourceTrust = parseFloat(alert.SourceTrust) || 0;
-  const assetCriticality = parseFloat(alert.AssetCriticality) || 0;
-  const assetMatch = parseFloat(alert.AssetMatch) || 0;
-  const exploitPressure = parseFloat(alert.ExploitPressure) || 0;
-  const ttpSeverity = parseFloat(alert.TTPSeverity) || 0;
-  const sightingsScore = parseFloat(alert.SightingsScore) || 0;
-  const benignPenalty = parseFloat(alert.BenignPenalty) || 0;
-
-  const score = 100 * (
-    0.2 * recency +
-    0.2 * sourceTrust +
-    0.2 * (assetCriticality / 5) +
-    0.15 * assetMatch +
-    0.15 * exploitPressure +
-    0.1 * (ttpSeverity / 5) +
-    0.1 * sightingsScore -
-    0.1 * benignPenalty
-  );
-  return Math.round(score);
-}
-
-function getPriority(score) {
-  if (score >= 85) return 'Critical';
-  if (score >= 70) return 'High';
-  if (score >= 50) return 'Medium';
-  return 'Low';
-}
+import { calculateScore, getPriority } from "./utils/scoring";
+import { removeDuplicates, removeFakeAlerts } from "./utils/cleaning";
+import { detectAndBlockIPs } from "./utils/ipBlocklist";
 
 export default function App() {
   const [alerts, setAlerts] = useState([]);
-  const [filter, setFilter] = useState("All");
+  const [report, setReport] = useState(null);
+  const [darkMode, setDarkMode] = useState(false);
+  const [soundOn, setSoundOn] = useState(true);
+  const [time, setTime] = useState(new Date());
+  const [rawData, setRawData] = useState(null);
+  const [autoRefresh, setAutoRefresh] = useState(false);
+  const [logs, setLogs] = useState([]);
+  const [newAlerts, setNewAlerts] = useState([]);
+  const prevCriticalCount = useRef(0);
 
-  const handleFileUpload = (e) => {
-    const file = e.target.files[0];
+  // Ask for Notification Permission
+  useEffect(() => {
+    if ("Notification" in window && Notification.permission !== "granted") {
+      Notification.requestPermission();
+    }
+  }, []);
+
+  // Clock
+  useEffect(() => {
+    const interval = setInterval(() => setTime(new Date()), 1000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Auto refresh
+  useEffect(() => {
+    if (!autoRefresh) return;
+    const interval = setInterval(() => handleRefresh(), 10000);
+    return () => clearInterval(interval);
+  }, [autoRefresh, rawData]);
+
+  // Log helper
+  const addLog = (message) => {
+    const timestamp = new Date().toLocaleTimeString();
+    setLogs((prev) => [{ time: timestamp, msg: message }, ...prev]);
+  };
+
+  // Beep
+  const playBeep = () => {
+    if (!soundOn) return;
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const oscillator = ctx.createOscillator();
+    const gainNode = ctx.createGain();
+
+    oscillator.connect(gainNode);
+    gainNode.connect(ctx.destination);
+
+    oscillator.type = "sine";
+    oscillator.frequency.value = 1000;
+    oscillator.start();
+
+    gainNode.gain.setValueAtTime(0.1, ctx.currentTime);
+    oscillator.stop(ctx.currentTime + 0.5);
+  };
+
+  // Clear popups
+  const clearPopups = () => {
+    setNewAlerts([]);
+    addLog("❌ All popups dismissed");
+  };
+
+  // Process alerts
+  const processAlerts = (data) => {
+    let processed = data.map((alert) => {
+      const score = calculateScore(alert);
+      return {
+        ...alert,
+        Score: score,
+        Priority: getPriority(score),
+        IncidentType: alert.IncidentType || "Unknown", // ensure IncidentType always exists
+      };
+    });
+
+    processed = removeDuplicates(processed);
+    processed = removeFakeAlerts(processed);
+
+    const blockedIPs = detectAndBlockIPs(processed);
+    blockedIPs.forEach((ip) => addLog(`🔒 Blocked IP: ${ip}`));
+
+    const priorityOrder = { Critical: 1, High: 2, Medium: 3, Low: 4 };
+    processed.sort(
+      (a, b) =>
+        priorityOrder[a.Priority] - priorityOrder[b.Priority] || b.Score - a.Score
+    );
+
+    // Detect new alerts
+    if (processed.length > alerts.length) {
+      const newOnes = processed.slice(0, processed.length - alerts.length);
+      setNewAlerts((prev) => [...prev, ...newOnes]);
+
+      newOnes.forEach((a) => {
+        // 🔔 Browser notification
+        if ("Notification" in window && Notification.permission === "granted") {
+          new Notification(`🚨 ${a.Priority} - ${a.IncidentType}`, {
+            body: `Source: ${a.SourceIP}\nScore: ${a.Score}\nTime: ${a.Timestamp}`,
+          });
+        }
+        // 📝 Log with incident type
+        addLog(
+          `⚠️ New ${a.Priority} Alert (${a.IncidentType}) from ${a.SourceIP} | Score: ${a.Score}`
+        );
+      });
+    }
+
+    // New critical alert beep + log
+    const criticalCount = processed.filter((a) => a.Priority === "Critical").length;
+    if (criticalCount > prevCriticalCount.current) {
+      playBeep();
+      addLog(`🚨 New Critical Alert detected! (Total: ${criticalCount})`);
+    }
+    prevCriticalCount.current = criticalCount;
+
+    setAlerts(processed);
+
+    // Report with full CSV stats
+    const summary = {
+      fileName: rawData?.fileName || "Uploaded File",
+      totalAlerts: data.length,
+      afterCleaning: processed.length,
+      duplicatesRemoved: data.length - processed.length,
+      blockedIPs,
+      criticalCount: processed.filter((a) => a.Priority === "Critical").length,
+      highCount: processed.filter((a) => a.Priority === "High").length,
+      mediumCount: processed.filter((a) => a.Priority === "Medium").length,
+      lowCount: processed.filter((a) => a.Priority === "Low").length,
+      incidentTypes: processed.reduce((acc, a) => {
+        acc[a.IncidentType] = (acc[a.IncidentType] || 0) + 1;
+        return acc;
+      }, {}),
+      uploadedAt: new Date().toLocaleString(),
+    };
+
+    setReport(summary);
+    addLog("✅ Alerts processed and dashboard updated");
+  };
+
+  // File upload
+  const handleFileUpload = (file) => {
     Papa.parse(file, {
       header: true,
-      skipEmptyLines: true,
       complete: (results) => {
-        const priorityOrder = { Critical: 1, High: 2, Medium: 3, Low: 4 };
-
-        const processed = results.data.map((alert) => {
-          const score = calculateScore(alert);
-          return { ...alert, Score: score, Priority: getPriority(score) };
-        });
-
-        // Sort alerts by priority
-        processed.sort((a, b) => priorityOrder[a.Priority] - priorityOrder[b.Priority]);
-
-        setAlerts(processed);
+        setRawData({ fileName: file.name, data: results.data });
+        processAlerts(results.data);
+        addLog(`📂 File uploaded: ${file.name}`);
       },
     });
   };
 
-  // Apply filter
-  const filteredAlerts = filter === "All"
-    ? alerts
-    : alerts.filter((a) => a.Priority === filter);
+  // Refresh
+  const handleRefresh = () => {
+    if (!rawData) return;
 
-  const chartData = ['Critical', 'High', 'Medium', 'Low'].map((level) => ({
-    name: level,
-    value: alerts.filter((a) => a.Priority === level).length,
-  }));
+    const newData = rawData.map((alert) => {
+      const randomFactor = Math.random();
+      if (randomFactor < 0.1) {
+        return { ...alert, AssetCriticality: Number(alert.AssetCriticality) + 1 };
+      } else if (randomFactor < 0.2) {
+        return { ...alert, AssetCriticality: 0, TTPSeverity: 0 };
+      }
+      return alert;
+    });
+
+    processAlerts(newData);
+    addLog("🔄 Data refreshed");
+  };
 
   return (
-    <div className="p-6">
-      <h1 className="text-2xl font-bold mb-4">🚨 Alert Prioritizer Dashboard</h1>
-      <input type="file" accept=".csv" onChange={handleFileUpload} className="mb-4" />
+    <div
+      className={
+        darkMode ? "dark bg-gray-900 text-gray-100" : "bg-gray-100 text-gray-900"
+      }
+    >
+      {/* Navbar */}
+      <header className="bg-yellow-200 dark:bg-gray-800 text-white shadow p-4 flex justify-between items-center">
+        <h1 className="text-xl font-bold text-black">🚨 Threat Intelligence Dashboard</h1>
 
-      {alerts.length > 0 && (
-        <>
-          {/* Dropdown filter */}
-          <div className="mb-4">
-            <label className="mr-2 font-semibold">Filter by Priority:</label>
-            <select
-              value={filter}
-              onChange={(e) => setFilter(e.target.value)}
-              className="border p-2 rounded"
-            >
-              <option value="All">All</option>
-              <option value="Critical">Critical</option>
-              <option value="High">High</option>
-              <option value="Medium">Medium</option>
-              <option value="Low">Low</option>
-            </select>
+        <div className="flex items-center space-x-4">
+          {/* Clock */}
+          <div className="font-mono text-sm bg-gray-200 text-black dark:bg-gray-700 dark:text-white px-3 py-1 rounded-md shadow">
+            {time.toLocaleTimeString()}
           </div>
 
-          {/* Table */}
-          <table className="table-auto w-full border-collapse border border-gray-300 mb-6">
-            <thead>
-              <tr className="bg-gray-100">
-                {Object.keys(filteredAlerts[0]).map((key) => (
-                  <th key={key} className="border border-gray-300 px-2 py-1">{key}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {filteredAlerts.map((row, i) => (
-                <tr key={i} className="hover:bg-gray-50">
-                  {Object.values(row).map((val, j) => (
-                    <td key={j} className="border border-gray-300 px-2 py-1">{val}</td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          {/* Controls */}
+          <button
+            onClick={handleRefresh}
+            className="px-3 py-1 rounded-md bg-green-500 hover:bg-green-600 text-white"
+            disabled={!rawData}
+          >
+            🔄 Refresh Now
+          </button>
 
-          {/* Chart */}
-          <PieChart width={400} height={300}>
-            <Pie
-              data={chartData}
-              dataKey="value"
-              nameKey="name"
-              cx="50%"
-              cy="50%"
-              outerRadius={100}
-              fill="#8884d8"
-              label
-            >
-              {chartData.map((entry, index) => (
-                <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-              ))}
-            </Pie>
-            <Tooltip />
-            <Legend />
-          </PieChart>
-        </>
-      )}
+          <button
+            onClick={() => setAutoRefresh(!autoRefresh)}
+            className={`px-3 py-1 rounded-md ${
+              autoRefresh
+                ? "bg-orange-600 hover:bg-orange-700 text-white"
+                : "bg-gray-200 text-black dark:bg-gray-700 dark:text-white"
+            }`}
+            disabled={!rawData}
+          >
+            {autoRefresh ? "⏱ Auto Refresh ON" : "⏱ Auto Refresh OFF"}
+          </button>
+
+          {/* Sound */}
+          <button
+            onClick={() => setSoundOn(!soundOn)}
+            className={`px-3 py-1 rounded-md ${
+              soundOn
+                ? "bg-red-600 hover:bg-red-700 text-white"
+                : "bg-gray-200 text-black dark:bg-gray-700 dark:text-white"
+            }`}
+          >
+            {soundOn ? "🔊 Sound ON" : "🔇 Sound OFF"}
+          </button>
+
+          
+        </div>
+      </header>
+
+      {/* Popups */}
+      <Popup alerts={newAlerts} clearPopups={clearPopups} />
+
+      {/* Content */}
+      <main className="p-6 grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className="lg:col-span-2 space-y-6">
+          <FileUpload onFileUpload={handleFileUpload} />
+          {alerts.length > 0 && <AlertTable alerts={alerts} />}
+        </div>
+        <div className="space-y-6">
+          {/* {alerts.length > 0 && <ChartView alerts={alerts} />} */}
+          {report && <AdminReport report={report} />}
+        </div>
+      </main>
+
+      {/* Logs */}
+      <footer className="p-4 border-t bg-gray-200 dark:bg-gray-800 dark:text-white mt-6 max-h-48 overflow-y-auto">
+        <h2 className="font-bold mb-2">📝 System Log</h2>
+        <ul className="text-sm space-y-1">
+          {logs.map((log, i) => (
+            <li key={i} className="font-mono">
+              [{log.time}] {log.msg}
+            </li>
+          ))}
+        </ul>
+      </footer>
     </div>
   );
 }
