@@ -177,7 +177,7 @@ export default function AdminReport({ report }) {
           </div>
 
           {/* Incident Type Pie */}
-          <div className="flex-1">
+          {/* <div className="flex-1">
             <h4 className="font-semibold mb-2">Incident Types</h4>
             <ResponsiveContainer width="100%" height={250}>
               <PieChart>
@@ -198,7 +198,7 @@ export default function AdminReport({ report }) {
                 <Legend />
               </PieChart>
             </ResponsiveContainer>
-          </div>
+          </div> */}
         </div>
       </div>
 

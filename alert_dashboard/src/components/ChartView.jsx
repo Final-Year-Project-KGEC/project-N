@@ -1,39 +1,57 @@
 import React from "react";
-import { PieChart, Pie, Cell, Tooltip, Legend } from "recharts";
+import {
+  PieChart,
+  Pie,
+  Cell,
+  Tooltip,
+  Legend,
+  ResponsiveContainer,
+} from "recharts";
 
 export default function ChartView({ alerts }) {
-  const counts = alerts.reduce((acc, a) => {
-    acc[a.Priority] = (acc[a.Priority] || 0) + 1;
-    return acc;
-  }, {});
+  if (!alerts || alerts.length === 0) return null;
 
-  const data = Object.keys(counts).map((key) => ({
-    name: key,
-    value: counts[key],
-  }));
+  // Count alerts by Priority
+  const counts = {
+    Critical: alerts.filter((a) => a.Priority === "Critical").length,
+    High: alerts.filter((a) => a.Priority === "High").length,
+    Medium: alerts.filter((a) => a.Priority === "Medium").length,
+    Low: alerts.filter((a) => a.Priority === "Low").length,
+  };
 
-  const COLORS = ["#FF0000", "#FF7F00", "#FFD700", "#00BFFF"];
+  const data = [
+    { name: "Critical", value: counts.Critical },
+    { name: "High", value: counts.High },
+    { name: "Medium", value: counts.Medium },
+    { name: "Low", value: counts.Low },
+  ];
+
+  const COLORS = ["#e11d48", "#f97316", "#facc15", "#22c55e"]; // red, orange, yellow, green
 
   return (
-    <div className="p-4 border rounded-xl shadow">
-      <h2 className="text-lg font-bold mb-2">Priority Distribution</h2>
-      <PieChart width={400} height={300}>
-        <Pie
-          data={data}
-          dataKey="value"
-          nameKey="name"
-          cx="50%"
-          cy="50%"
-          outerRadius={100}
-          label
-        >
-          {data.map((_, i) => (
-            <Cell key={i} fill={COLORS[i % COLORS.length]} />
-          ))}
-        </Pie>
-        <Tooltip />
-        <Legend />
-      </PieChart>
+    <div className="bg-white dark:bg-gray-800 shadow rounded-2xl p-4">
+      <h2 className="text-lg font-semibold mb-4 dark:text-white">
+        📊 Alert Distribution
+      </h2>
+      <ResponsiveContainer width="100%" height={300}>
+        <PieChart>
+          <Pie
+            data={data}
+            cx="50%"
+            cy="50%"
+            labelLine={false}
+            label={({ name, value }) => `${name}: ${value}`}
+            outerRadius={100}
+            dataKey="value"
+          >
+            {data.map((entry, index) => (
+              <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+            ))}
+          </Pie>
+          <Tooltip />
+          <Legend />
+        </PieChart>
+      </ResponsiveContainer>
     </div>
   );
 }

@@ -72,17 +72,15 @@ export default function App() {
     addLog("❌ All popups dismissed");
   };
 
-  // Process alerts
+  // Process alerts pipeline
   const processAlerts = (data) => {
-    let processed = data.map((alert) => {
-      const score = calculateScore(alert);
-      return {
-        ...alert,
-        Score: score,
-        Priority: getPriority(score),
-        IncidentType: alert.IncidentType || "Unknown", // ensure IncidentType always exists
-      };
-    });
+    let processed = data
+      .filter((row) => row.AlertID) // ✅ Only valid rows
+      .map((alert) => {
+        const score = calculateScore(alert);
+        const priority = getPriority(score);
+        return { ...alert, Score: score, Priority: priority };
+      });
 
     processed = removeDuplicates(processed);
     processed = removeFakeAlerts(processed);
@@ -102,13 +100,11 @@ export default function App() {
       setNewAlerts((prev) => [...prev, ...newOnes]);
 
       newOnes.forEach((a) => {
-        // 🔔 Browser notification
         if ("Notification" in window && Notification.permission === "granted") {
           new Notification(`🚨 ${a.Priority} - ${a.IncidentType}`, {
             body: `Source: ${a.SourceIP}\nScore: ${a.Score}\nTime: ${a.Timestamp}`,
           });
         }
-        // 📝 Log with incident type
         addLog(
           `⚠️ New ${a.Priority} Alert (${a.IncidentType}) from ${a.SourceIP} | Score: ${a.Score}`
         );
@@ -125,7 +121,6 @@ export default function App() {
 
     setAlerts(processed);
 
-    // Report with full CSV stats
     const summary = {
       fileName: rawData?.fileName || "Uploaded File",
       totalAlerts: data.length,
@@ -136,10 +131,6 @@ export default function App() {
       highCount: processed.filter((a) => a.Priority === "High").length,
       mediumCount: processed.filter((a) => a.Priority === "Medium").length,
       lowCount: processed.filter((a) => a.Priority === "Low").length,
-      incidentTypes: processed.reduce((acc, a) => {
-        acc[a.IncidentType] = (acc[a.IncidentType] || 0) + 1;
-        return acc;
-      }, {}),
       uploadedAt: new Date().toLocaleString(),
     };
 
@@ -163,7 +154,7 @@ export default function App() {
   const handleRefresh = () => {
     if (!rawData) return;
 
-    const newData = rawData.map((alert) => {
+    const newData = rawData.data.map((alert) => {
       const randomFactor = Math.random();
       if (randomFactor < 0.1) {
         return { ...alert, AssetCriticality: Number(alert.AssetCriticality) + 1 };
@@ -184,8 +175,8 @@ export default function App() {
       }
     >
       {/* Navbar */}
-      <header className="bg-yellow-200 dark:bg-gray-800 text-white shadow p-4 flex justify-between items-center">
-        <h1 className="text-xl font-bold text-black">🚨 Threat Intelligence Dashboard</h1>
+      <header className="bg-yellow-200 dark:bg-gray-800 text-black shadow p-4 flex justify-between items-center">
+        <h1 className="text-xl font-bold ">🚨 Threat Intelligence Dashboard</h1>
 
         <div className="flex items-center space-x-4">
           {/* Clock */}
@@ -226,7 +217,13 @@ export default function App() {
             {soundOn ? "🔊 Sound ON" : "🔇 Sound OFF"}
           </button>
 
-          
+          {/* Dark/Light */}
+          {/* <button
+            onClick={() => setDarkMode(!darkMode)}
+            className="px-3 py-1 rounded-md bg-gray-200 text-black dark:bg-gray-700 dark:text-white"
+          >
+            {darkMode ? "🌞 Light Mode" : "🌙 Dark Mode"}
+          </button> */}
         </div>
       </header>
 
