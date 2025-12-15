@@ -1,5 +1,3 @@
-// scoring.js
-
 // Helper: normalize a value into a weighted range
 function normalize(value, max = 10, weight = 20) {
   const v = parseFloat(value) || 0;
